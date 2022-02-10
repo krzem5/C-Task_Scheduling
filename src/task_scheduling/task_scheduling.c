@@ -245,8 +245,11 @@ task_index_t create_task(task_function_t fn){
 
 
 void delete_mutex(mutex_t m){
-	if (m>=_scheduler_data->ml.len||!MUTEX_USED(*(_scheduler_data->ml.dt+m))||*(_scheduler_data->ml.dt+m)!=EMPTY_MUTEX){
+	if (m>=_scheduler_data->ml.len||!MUTEX_USED(*(_scheduler_data->ml.dt+m))){
 		return;
+	}
+	if (*(_scheduler_data->ml.dt+m)!=EMPTY_MUTEX){
+		printf("Deleted non-empy mutex!\n");
 	}
 	*(_scheduler_data->ml.dt+m)=_scheduler_data->ml.idx|MUTEX_FLAG_PTR_UNUSED;
 	_scheduler_data->ml.idx=m;
@@ -267,18 +270,22 @@ void release_mutex(mutex_t m){
 	if (m>=_scheduler_data->ml.len||!MUTEX_USED(*(_scheduler_data->ml.dt+m))){
 		return;
 	}
-	*(_scheduler_data->ml.dt+m)=EMPTY_MUTEX;
+	if (*(_scheduler_data->ml.dt+m)==EMPTY_MUTEX){
+		printf("Released empy mutex!\n");
+	}
 	task_count_t i=0;
 	while (i<_scheduler_data->wl.len){
 		task_index_t j=*(_scheduler_data->wl.dt+i);
 		if ((_scheduler_data->tl.dt+j)->w==CREATE_HANDLE(HANDLE_TYPE_MUTEX,m)){
 			(_scheduler_data->tl.dt+j)->w=UNKNOWN_HANDLE;
 			_queue_task(j);
+			*(_scheduler_data->ml.dt+m)=j;
 			break;
 		}
 		i++;
 	}
 	if (i==_scheduler_data->wl.len){
+		*(_scheduler_data->ml.dt+m)=EMPTY_MUTEX;
 		return;
 	}
 	i++;
@@ -322,7 +329,7 @@ void run_scheduler(task_function_t fn){
 			UNKNOWN_MUTEX_OFFSET
 		}
 	};
-	_scheduler_data=&dt;
+	_scheduler_data=&dt;// lgtm [cpp/stack-address-escape]
 	task_index_t task=_create_task(fn);
 	while (1){
 		uint32_t i=0;
@@ -338,6 +345,9 @@ void run_scheduler(task_function_t fn){
 					(dt.tl.dt+task)->w=CREATE_HANDLE(HANDLE_TYPE_TASK,w_id);
 					_add_wait(task);
 					task=_remove_queue_task();
+					if (task==UNKNOWN_TASK_INDEX){
+						goto _error;
+					}
 				}
 				else{
 					continue;
@@ -354,6 +364,9 @@ void run_scheduler(task_function_t fn){
 						(dt.tl.dt+task)->w=CREATE_HANDLE(HANDLE_TYPE_MUTEX,mtx);
 						_add_wait(task);
 						task=_remove_queue_task();
+						if (task==UNKNOWN_TASK_INDEX){
+							goto _error;
+						}
 					}
 				}
 				else{
@@ -362,17 +375,15 @@ void run_scheduler(task_function_t fn){
 			}
 			else if (TASK_RETURN_GET_TYPE(rt)!=TASK_YIELD){
 				if (!dt.q.len&&!dt.wl.len){
-					free(dt.tl.dt);
-					free(dt.q.dt);
-					free(dt.wl.dt);
-					free(dt.ml.dt);
-					_scheduler_data=NULL;
-					return;
+					goto _cleanup;
 				}
 				(dt.tl.dt+task)->fn=TASK_TERMINATED;
 				task=_remove_wait_tasks(CREATE_HANDLE(HANDLE_TYPE_TASK,task));
 				if (task==UNKNOWN_TASK_INDEX){
 					task=_remove_queue_task();
+					if (task==UNKNOWN_TASK_INDEX){
+						goto _error;
+					}
 				}
 			}
 			i=(TASK_RETURN_GET_TYPE(rt)==TASK_YIELD?TASK_INSTRUCTION_COUNT:0);
@@ -388,4 +399,13 @@ void run_scheduler(task_function_t fn){
 			dt.q.idx--;
 		}
 	}
+_error:
+	printf("Execution ended due to a deadlock.\n");
+_cleanup:
+	free(dt.tl.dt);
+	free(dt.q.dt);
+	free(dt.wl.dt);
+	free(dt.ml.dt);
+	_scheduler_data=NULL;
+	return;
 }
