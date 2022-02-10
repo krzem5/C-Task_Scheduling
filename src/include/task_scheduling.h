@@ -9,7 +9,7 @@
 #define TASK_WAIT 2
 #define TASK_END 3
 
-#define TASK_DATA(t,v) (((v)<<2)|(t))
+#define TASK_DATA(t,v) ((t)|((v)<<2))
 
 
 

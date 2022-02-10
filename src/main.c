@@ -8,7 +8,7 @@ static task_return_t print_task(void){
 	static unsigned int tick=0;
 	printf("[print-task-1]: tick %u\n",tick);
 	tick++;
-	if (tick>=40){
+	if (tick>=20){
 		return TASK_END;
 	}
 	return TASK_OK;
@@ -20,7 +20,7 @@ static task_return_t print_task2(void){
 	static unsigned int tick=0;
 	printf("[print-task-2]: tick %u\n",tick);
 	tick++;
-	if (tick>=40){
+	if (tick>=20){
 		return TASK_END;
 	}
 	return TASK_YIELD;
@@ -44,10 +44,11 @@ static task_return_t main_task(void){
 			remove_task(child[0]);
 			printf("Child#1 finished\n");
 			return TASK_DATA(TASK_WAIT,child[1]);
+		default:
+			remove_task(child[1]);
+			printf("Child#2 finished\n");
+			return TASK_END;
 	}
-	remove_task(child[1]);
-	printf("Child#2 finished\n");
-	return TASK_END;
 }
 
 

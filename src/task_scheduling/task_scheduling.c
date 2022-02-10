@@ -19,6 +19,14 @@
 #define TASK_RETURN_GET_TYPE(rt) ((rt)&3)
 #define TASK_RETURN_GET_DATA(rt) ((rt)>>2)
 
+#define HANDLE_TYPE_TASK 0
+#define HANDLE_TYPE_MUTEX 1
+
+#define CREATE_HANDLE(t,v) ((t)|((v)<<1))
+
+#define HANDLE_GET_TYPE(h) ((h)&1)
+#define HANDLE_GET_DATA(h) ((h)>>1)
+
 #define UNKNOWN_HANDLE 0xffffffff
 
 #define UNKNOWN_TASK_INDEX 0xffffffff
@@ -228,7 +236,7 @@ void run_scheduler(task_function_t fn){
 			if (TASK_RETURN_GET_TYPE(rt)==TASK_WAIT){
 				task_index_t w_id=(task_index_t)TASK_RETURN_GET_DATA(rt);
 				if (w_id!=task&&w_id<dt.tl.len&&(dt.tl.dt+w_id)->fn!=TASK_UNUSED&&(dt.tl.dt+w_id)->fn!=TASK_TERMINATED){
-					(dt.tl.dt+task)->w=w_id;
+					(dt.tl.dt+task)->w=CREATE_HANDLE(HANDLE_TYPE_TASK,w_id);
 					_add_wait_task(task);
 					task=_remove_queue_task();
 				}
@@ -245,7 +253,7 @@ void run_scheduler(task_function_t fn){
 					return;
 				}
 				(dt.tl.dt+task)->fn=TASK_TERMINATED;
-				task=_remove_wait_tasks(task);
+				task=_remove_wait_tasks(CREATE_HANDLE(HANDLE_TYPE_TASK,task));
 				if (task==UNKNOWN_TASK_INDEX){
 					task=_remove_queue_task();
 				}
