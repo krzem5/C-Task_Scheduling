@@ -1,6 +1,7 @@
 #include <task_scheduling.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 
 
@@ -16,8 +17,11 @@
 #define WAIT_LIST_ALLOCATION_COUNT 256
 #define WAIT_LIST_ALLOCATION_SIZE(l) (((l)+255)&0xffffff00)
 
-#define TASK_RETURN_GET_TYPE(rt) ((rt)&3)
-#define TASK_RETURN_GET_DATA(rt) ((rt)>>2)
+#define MUTEX_ALLOCATION_COUNT 256
+#define MUTEX_ALLOCATION_SIZE(l) (((l)+255)&0xffffff00)
+
+#define TASK_RETURN_GET_TYPE(rt) ((rt)&7)
+#define TASK_RETURN_GET_DATA(rt) ((rt)>>3)
 
 #define HANDLE_TYPE_TASK 0
 #define HANDLE_TYPE_MUTEX 1
@@ -31,13 +35,26 @@
 
 #define UNKNOWN_TASK_INDEX 0xffffffff
 
+#define UNKNOWN_MUTEX_OFFSET 0xffffffff
 
+#define EMPTY_MUTEX 0x7fffffff
 
-typedef uint32_t task_count_t;
+#define MUTEX_FLAG_PTR_UNUSED 0x80000000
+#define UNUSED_MUTEX_GET_NEXT(m) ((m)==UNKNOWN_MUTEX_OFFSET?UNKNOWN_MUTEX_OFFSET:(m)&0x7fffffff)
+
+#define MUTEX_USED(m) (!((m)&MUTEX_FLAG_PTR_UNUSED))
 
 
 
 typedef uint32_t handle_t;
+
+
+
+typedef uint32_t mutex_count_t;
+
+
+
+typedef uint32_t task_count_t;
 
 
 
@@ -74,10 +91,20 @@ typedef struct __WAIT_LIST{
 
 
 
+typedef struct __MUTEX_LIST{
+	task_index_t* dt;
+	mutex_count_t max;
+	mutex_count_t len;
+	mutex_count_t idx;
+} mutex_list_t;
+
+
+
 typedef struct __SCHEDULER{
 	task_list_t tl;
 	queue_t q;
 	wait_list_t wl;
+	mutex_list_t ml;
 } scheduler_t;
 
 
@@ -120,6 +147,9 @@ static void _queue_task(task_index_t t){
 
 
 static task_index_t _remove_queue_task(void){
+	if (!_scheduler_data->q.len){
+		return UNKNOWN_TASK_INDEX;
+	}
 	task_index_t o=*(_scheduler_data->q.dt+_scheduler_data->q.idx);
 	for (task_count_t j=_scheduler_data->q.idx+1;j<_scheduler_data->q.len;j++){
 		*(_scheduler_data->q.dt+j-1)=*(_scheduler_data->q.dt+j);
@@ -143,7 +173,7 @@ static task_index_t _remove_queue_task(void){
 
 
 
-static void _add_wait_task(task_index_t t){
+static void _add_wait(task_index_t t){
 	_scheduler_data->wl.len++;
 	if (_scheduler_data->wl.len==_scheduler_data->wl.max){
 		_scheduler_data->wl.max+=WAIT_LIST_ALLOCATION_COUNT;
@@ -186,10 +216,40 @@ static task_index_t _remove_wait_tasks(handle_t id){
 
 
 
+mutex_t create_mutex(void){
+	mutex_t o;
+	if (_scheduler_data->ml.idx==UNKNOWN_MUTEX_OFFSET){
+		o=_scheduler_data->ml.len;
+		_scheduler_data->ml.len++;
+		if (_scheduler_data->ml.len>=_scheduler_data->ml.max){
+			_scheduler_data->ml.max+=WAIT_LIST_ALLOCATION_COUNT;
+			_scheduler_data->ml.dt=realloc(_scheduler_data->ml.dt,_scheduler_data->ml.max*sizeof(task_index_t));
+		}
+	}
+	else{
+		o=_scheduler_data->ml.idx;
+		_scheduler_data->ml.idx=UNUSED_MUTEX_GET_NEXT(*(_scheduler_data->ml.dt+o));
+	}
+	*(_scheduler_data->ml.dt+o)=EMPTY_MUTEX;
+	return o;
+}
+
+
+
 task_index_t create_task(task_function_t fn){
 	task_index_t o=_create_task(fn);
 	_queue_task(o);
 	return o;
+}
+
+
+
+void delete_mutex(mutex_t m){
+	if (m>=_scheduler_data->ml.len||!MUTEX_USED(*(_scheduler_data->ml.dt+m))||*(_scheduler_data->ml.dt+m)!=EMPTY_MUTEX){
+		return;
+	}
+	*(_scheduler_data->ml.dt+m)=_scheduler_data->ml.idx|MUTEX_FLAG_PTR_UNUSED;
+	_scheduler_data->ml.idx=m;
 }
 
 
@@ -199,6 +259,39 @@ void remove_task(task_index_t id){
 		return;
 	}
 	(_scheduler_data->tl.dt+id)->fn=TASK_UNUSED;
+}
+
+
+
+void release_mutex(mutex_t m){
+	if (m>=_scheduler_data->ml.len||!MUTEX_USED(*(_scheduler_data->ml.dt+m))){
+		return;
+	}
+	*(_scheduler_data->ml.dt+m)=EMPTY_MUTEX;
+	task_count_t i=0;
+	while (i<_scheduler_data->wl.len){
+		task_index_t j=*(_scheduler_data->wl.dt+i);
+		if ((_scheduler_data->tl.dt+j)->w==CREATE_HANDLE(HANDLE_TYPE_MUTEX,m)){
+			(_scheduler_data->tl.dt+j)->w=UNKNOWN_HANDLE;
+			_queue_task(j);
+			break;
+		}
+		i++;
+	}
+	if (i==_scheduler_data->wl.len){
+		return;
+	}
+	i++;
+	while (i<_scheduler_data->wl.len){
+		*(_scheduler_data->wl.dt+i-1)=*(_scheduler_data->wl.dt+i);
+		i++;
+	}
+	_scheduler_data->wl.len--;
+	task_count_t sz=WAIT_LIST_ALLOCATION_SIZE(_scheduler_data->wl.len);
+	if (sz&&sz<_scheduler_data->wl.max){
+		_scheduler_data->wl.max=sz;
+		_scheduler_data->wl.dt=realloc(_scheduler_data->wl.dt,_scheduler_data->wl.max*sizeof(task_index_t));
+	}
 }
 
 
@@ -221,6 +314,12 @@ void run_scheduler(task_function_t fn){
 			malloc(WAIT_LIST_ALLOCATION_COUNT*sizeof(task_index_t)),
 			WAIT_LIST_ALLOCATION_COUNT,
 			0
+		},
+		{
+			NULL,
+			0,
+			0,
+			UNKNOWN_MUTEX_OFFSET
 		}
 	};
 	_scheduler_data=&dt;
@@ -237,8 +336,25 @@ void run_scheduler(task_function_t fn){
 				task_index_t w_id=(task_index_t)TASK_RETURN_GET_DATA(rt);
 				if (w_id!=task&&w_id<dt.tl.len&&(dt.tl.dt+w_id)->fn!=TASK_UNUSED&&(dt.tl.dt+w_id)->fn!=TASK_TERMINATED){
 					(dt.tl.dt+task)->w=CREATE_HANDLE(HANDLE_TYPE_TASK,w_id);
-					_add_wait_task(task);
+					_add_wait(task);
 					task=_remove_queue_task();
+				}
+				else{
+					continue;
+				}
+			}
+			else if (TASK_RETURN_GET_TYPE(rt)==TASK_MTX){
+				mutex_t mtx=(mutex_t)TASK_RETURN_GET_DATA(rt);
+				if (mtx<dt.ml.len&&MUTEX_USED(*(dt.ml.dt+mtx))){
+					if (*(dt.ml.dt+mtx)==EMPTY_MUTEX){
+						*(dt.ml.dt+mtx)=task;
+						continue;
+					}
+					else{
+						(dt.tl.dt+task)->w=CREATE_HANDLE(HANDLE_TYPE_MUTEX,mtx);
+						_add_wait(task);
+						task=_remove_queue_task();
+					}
 				}
 				else{
 					continue;
@@ -249,6 +365,7 @@ void run_scheduler(task_function_t fn){
 					free(dt.tl.dt);
 					free(dt.q.dt);
 					free(dt.wl.dt);
+					free(dt.ml.dt);
 					_scheduler_data=NULL;
 					return;
 				}
