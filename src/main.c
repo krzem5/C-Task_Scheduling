@@ -11,7 +11,7 @@ static task_return_t print_task(task_state_t* o){
 	if (tick>=40){
 		return TASK_END;
 	}
-	return TASK_YIELD;
+	return TASK_OK;
 }
 
 
@@ -23,7 +23,7 @@ static task_return_t print_task2(task_state_t* o){
 	if (tick>=40){
 		return TASK_END;
 	}
-	return TASK_OK;
+	return TASK_YIELD;
 }
 
 
@@ -32,26 +32,24 @@ static task_return_t main_task(task_state_t* o){
 	static unsigned int tick=0;
 	static task_index_t* child=NULL;
 	tick++;
-	if (tick==1){
-		child=malloc(2*sizeof(task_index_t));
-		o->start.fn=print_task2;
-		o->start.id=child;
-		return TASK_START;
-	}
-	if (tick==2){
-		o->start.fn=print_task;
-		o->start.id=child+1;
-		return TASK_START;
-	}
-	if (tick==3){
-		o->wait=*child;
-		printf("Child#1: %u, Child#2: %u\n",*child,*(child+1));
-		return TASK_WAIT;
-	}
-	if (tick==4){
-		o->wait=*(child+1);
-		printf("Child#1 finished\n");
-		return TASK_WAIT;
+	switch (tick){
+		case 1:
+			child=malloc(2*sizeof(task_index_t));
+			o->start.fn=print_task;
+			o->start.id=child;
+			return TASK_START;
+		case 2:
+			o->start.fn=print_task2;
+			o->start.id=child+1;
+			return TASK_START;
+		case 3:
+			o->wait=*child;
+			printf("Child#1: %u, Child#2: %u\n",*child,*(child+1));
+			return TASK_WAIT;
+		case 4:
+			o->wait=*(child+1);
+			printf("Child#1 finished\n");
+			return TASK_WAIT;
 	}
 	printf("Child#2 finished\n");
 	free(child);
