@@ -1,13 +1,14 @@
 #include <task_scheduling.h>
+#include <stdlib.h>
 #include <stdio.h>
 
 
 
-static task_return_t print_task(void){
+static task_return_t print_task(task_state_t* o){
 	static unsigned int tick=0;
 	printf("[print-task-1]: tick %u\n",tick);
 	tick++;
-	if (tick>=200){
+	if (tick>=40){
 		return TASK_END;
 	}
 	return TASK_YIELD;
@@ -15,11 +16,11 @@ static task_return_t print_task(void){
 
 
 
-static task_return_t print_task2(void){
+static task_return_t print_task2(task_state_t* o){
 	static unsigned int tick=0;
 	printf("[print-task-2]: tick %u\n",tick);
 	tick++;
-	if (tick>=200){
+	if (tick>=40){
 		return TASK_END;
 	}
 	return TASK_OK;
@@ -27,19 +28,34 @@ static task_return_t print_task2(void){
 
 
 
-static task_return_t main_task(void){
+static task_return_t main_task(task_state_t* o){
 	static unsigned int tick=0;
+	static task_index_t* child=NULL;
 	tick++;
-	if (tick==5){
-		return print_task;
+	if (tick==1){
+		child=malloc(2*sizeof(task_index_t));
+		o->start.fn=print_task2;
+		o->start.id=child;
+		return TASK_START;
 	}
-	else if (tick==100){
-		return print_task2;
+	if (tick==2){
+		o->start.fn=print_task;
+		o->start.id=child+1;
+		return TASK_START;
 	}
-	else if (tick>=250){
-		return TASK_END;
+	if (tick==3){
+		o->wait=*child;
+		printf("Child#1: %u, Child#2: %u\n",*child,*(child+1));
+		return TASK_WAIT;
 	}
-	return TASK_OK;
+	if (tick==4){
+		o->wait=*(child+1);
+		printf("Child#1 finished\n");
+		return TASK_WAIT;
+	}
+	printf("Child#2 finished\n");
+	free(child);
+	return TASK_END;
 }
 
 
