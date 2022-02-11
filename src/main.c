@@ -5,6 +5,7 @@
 
 
 static mutex_t mtx;
+static semaphore_t sem;
 
 
 
@@ -43,7 +44,7 @@ static task_return_t mutex_task(void){
 	if (tick==11){
 		printf("[mutex-task-1]: Acquired mutex\n");
 	}
-	if (tick==40){
+	if (tick>=40){
 		release_mutex(mtx);
 		printf("[mutex-task-1]: Released mutex\n");
 		return TASK_END;
@@ -64,7 +65,7 @@ static task_return_t mutex_task2(void){
 	if (tick==17){
 		printf("[mutex-task-2]: Acquired mutex\n");
 	}
-	if (tick==18){
+	if (tick>=18){
 		release_mutex(mtx);
 		printf("[mutex-task-2]: Released mutex\n");
 		return TASK_END;
@@ -74,34 +75,110 @@ static task_return_t mutex_task2(void){
 
 
 
+static task_return_t semaphore_task(void){
+	static unsigned int tick=0;
+	printf("[semaphore-task-1]: tick %u\n",tick);
+	tick++;
+	if (tick==10){
+		printf("[semaphore-task-1]: Waiting for semaphore\n");
+		return TASK_DATA(TASK_SEM,sem);
+	}
+	if (tick==11){
+		printf("[semaphore-task-1]: Acquired semaphore\n");
+	}
+	if (tick>=40){
+		release_semaphore(sem);
+		printf("[semaphore-task-1]: Released semaphore\n");
+		return TASK_END;
+	}
+	return TASK_OK;
+}
+
+
+
+static task_return_t semaphore_task2(void){
+	static unsigned int tick=0;
+	printf("[semaphore-task-2]: tick %u\n",tick);
+	tick++;
+	if (tick==12){
+		printf("[semaphore-task-2]: Waiting for semaphore\n");
+		return TASK_DATA(TASK_SEM,sem);
+	}
+	if (tick==13){
+		printf("[semaphore-task-2]: Acquired semaphore\n");
+	}
+	if (tick>=30){
+		release_semaphore(sem);
+		printf("[semaphore-task-2]: Released semaphore\n");
+		return TASK_END;
+	}
+	return TASK_OK;
+}
+
+
+
+static task_return_t semaphore_task3(void){
+	static unsigned int tick=0;
+	printf("[semaphore-task-3]: tick %u\n",tick);
+	tick++;
+	if (tick==20){
+		printf("[semaphore-task-3]: Waiting for semaphore\n");
+		return TASK_DATA(TASK_SEM,sem);
+	}
+	if (tick==21){
+		printf("[semaphore-task-3]: Acquired semaphore\n");
+	}
+	if (tick>=22){
+		release_semaphore(sem);
+		printf("[semaphore-task-3]: Released semaphore\n");
+		return TASK_END;
+	}
+	return TASK_OK;
+}
+
+
+
 static task_return_t main_task(void){
 	static unsigned int tick=0;
-	static task_index_t child[2];
+	static task_index_t child[3];
 	tick++;
 	switch (tick){
 		case 1:
 			child[0]=create_task(print_task);
 			child[1]=create_task(print_task2);
 			printf("Child#1: %u, Child#2: %u\n",child[0],child[1]);
-			return TASK_OK;
-		case 2:
 			return TASK_DATA(TASK_WAIT,child[0]);
-		case 3:
+		case 2:
 			remove_task(child[0]);
 			printf("Child#1 finished\n");
 			return TASK_DATA(TASK_WAIT,child[1]);
-		case 4:
+		case 3:
 			remove_task(child[1]);
 			printf("Child#2 finished\n");
 			mtx=create_mutex();
 			child[0]=create_task(mutex_task);
 			child[1]=create_task(mutex_task2);
 			return TASK_DATA(TASK_WAIT,child[0]);
-		case 5:
+		case 4:
 			remove_task(child[0]);
 			return TASK_DATA(TASK_WAIT,child[1]);
-		default:
+		case 5:
+			remove_task(child[1]);
 			delete_mutex(mtx);
+			sem=create_semaphore(1);
+			child[0]=create_task(semaphore_task);
+			child[1]=create_task(semaphore_task2);
+			child[2]=create_task(semaphore_task3);
+			return TASK_DATA(TASK_WAIT,child[0]);
+		case 6:
+			remove_task(child[0]);
+			return TASK_DATA(TASK_WAIT,child[1]);
+		case 7:
+			remove_task(child[1]);
+			return TASK_DATA(TASK_WAIT,child[2]);
+		default:
+			remove_task(child[2]);
+			delete_semaphore(sem);
 			return TASK_END;
 	}
 }
