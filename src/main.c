@@ -6,6 +6,7 @@
 
 static mutex_t mtx;
 static semaphore_t sem;
+static barrier_t bar;
 
 
 
@@ -138,6 +139,38 @@ static task_return_t semaphore_task3(void){
 
 
 
+static task_return_t barrier_task(void){
+	static unsigned int tick=0;
+	printf("[barrier-task-1]: tick %u\n",tick);
+	tick++;
+	if (tick==21){
+		printf("[barrier-task-1]: Increasing barrier counter\n");
+		increase_barrier(bar);
+		return TASK_END;
+	}
+	return TASK_OK;
+}
+
+
+
+static task_return_t barrier_task2(void){
+	static unsigned int tick=0;
+	printf("[barrier-task-2]: tick %u\n",tick);
+	tick++;
+	if (tick==12){
+		printf("[barrier-task-2]: Waiting for barrier >=1\n");
+		return TASK_DATA2(TASK_BGE,bar,1);
+	}
+	if (tick==13){
+		printf("[barrier-task-2]: Barrier broken\n");
+		reset_barrier(bar);
+		return TASK_END;
+	}
+	return TASK_OK;
+}
+
+
+
 static task_return_t main_task(void){
 	static unsigned int tick=0;
 	static task_index_t child[3];
@@ -176,9 +209,19 @@ static task_return_t main_task(void){
 		case 7:
 			remove_task(child[1]);
 			return TASK_DATA(TASK_WAIT,child[2]);
-		default:
+		case 8:
 			remove_task(child[2]);
 			delete_semaphore(sem);
+			bar=create_barrier();
+			child[0]=create_task(barrier_task);
+			child[1]=create_task(barrier_task2);
+			return TASK_DATA(TASK_WAIT,child[0]);
+		case 9:
+			remove_task(child[0]);
+			return TASK_DATA(TASK_WAIT,child[1]);
+		default:
+			remove_task(child[1]);
+			delete_barrier(bar);
 			return TASK_END;
 	}
 }

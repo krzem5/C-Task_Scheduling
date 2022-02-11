@@ -21,38 +21,46 @@
 #define MUTEX_ALLOCATION_SIZE(l) (((l)+255)&0xffffff00)
 
 #define TASK_RETURN_GET_TYPE(rt) ((rt)&7)
-#define TASK_RETURN_GET_DATA(rt) ((rt)>>3)
+#define TASK_RETURN_GET_DATA(rt) (((rt)>>3)&0xffffffff)
+#define TASK_RETURN_GET_DATA2(rt) ((rt)>>35)
 
 #define HANDLE_TYPE_TASK 0
-#define HANDLE_TYPE_MUTEX 1
-#define HANDLE_TYPE_SEMAPHORE 2
+#define HANDLE_TYPE_BARRIER_EQ 1
+#define HANDLE_TYPE_BARRIER_GEQ 2
+#define HANDLE_TYPE_MUTEX 3
+#define HANDLE_TYPE_SEMAPHORE 4
 
-#define CREATE_HANDLE(t,v) ((t)|((v)<<2))
+#define CREATE_HANDLE(t,v) ((t)|((v)<<3))
+#define CREATE_HANDLE2(t,v,n) ((t)|(((handle_t)(v))<<3)|(((handle_t)(n))<<35))
 
-#define HANDLE_GET_TYPE(h) ((h)&1)
-#define HANDLE_GET_DATA(h) ((h)>>1)
+#define HANDLE_GET_TYPE(h) ((h)&7)
+#define HANDLE_GET_DATA(h) (((h)>>3)&0xffffffff)
+#define HANDLE_GET_DATA2(h) ((h)>>35)
 
-#define UNKNOWN_HANDLE 0xffffffff
+#define UNKNOWN_HANDLE 0xffffffffffffffffull
 
-#define UNKNOWN_TASK_INDEX 0xffffffff
-
+#define UNKNOWN_BARRIER_OFFSET 0xffffffff
 #define UNKNOWN_MUTEX_OFFSET 0xffffffff
-
 #define UNKNOWN_SEMAPHORE_OFFSET 0xffffffff
+#define UNKNOWN_TASK_INDEX 0xffffffff
 
 #define EMPTY_MUTEX 0x7fffffff
 
+#define BARRIER_FLAG_PTR_UNUSED 0x80000000
 #define MUTEX_FLAG_PTR_UNUSED 0x80000000
-#define UNUSED_MUTEX_GET_NEXT(m) ((m)==UNKNOWN_MUTEX_OFFSET?UNKNOWN_MUTEX_OFFSET:(m)&0x7fffffff)
-
 #define SEMAPHORE_FLAG_PTR_UNUSED 0x80000000
 
+#define BARRIER_USED(m) (!((m)&MUTEX_FLAG_PTR_UNUSED))
 #define MUTEX_USED(m) (!((m)&MUTEX_FLAG_PTR_UNUSED))
 #define SEMAPHORE_USED(m) (!((m)&SEMAPHORE_FLAG_PTR_UNUSED))
 
 
 
-typedef uint64_t handle_t;
+typedef uint32_t barrier_count_t;
+
+
+
+typedef uint32_t barrier_counter_t;
 
 
 
@@ -65,6 +73,10 @@ typedef uint32_t semaphore_count_t;
 
 
 typedef uint32_t task_count_t;
+
+
+
+typedef uint64_t handle_t;
 
 
 
@@ -119,12 +131,22 @@ typedef struct __SEMAPHORE_LIST{
 
 
 
+typedef struct __BARRIER_LIST{
+	barrier_counter_t* dt;
+	barrier_count_t max;
+	barrier_count_t len;
+	barrier_count_t idx;
+} barrier_list_t;
+
+
+
 typedef struct __SCHEDULER{
 	task_list_t tl;
 	queue_t q;
 	wait_list_t wl;
 	mutex_list_t ml;
 	semaphore_list_t sl;
+	barrier_list_t bl;
 } scheduler_t;
 
 
@@ -236,6 +258,26 @@ static task_index_t _remove_wait_tasks(handle_t id){
 
 
 
+barrier_t create_barrier(void){
+	barrier_t o;
+	if (_scheduler_data->bl.idx==UNKNOWN_BARRIER_OFFSET){
+		o=_scheduler_data->bl.len;
+		_scheduler_data->bl.len++;
+		if (_scheduler_data->bl.len>=_scheduler_data->bl.max){
+			_scheduler_data->bl.max+=WAIT_LIST_ALLOCATION_COUNT;
+			_scheduler_data->bl.dt=realloc(_scheduler_data->bl.dt,_scheduler_data->bl.max*sizeof(task_index_t));
+		}
+	}
+	else{
+		o=_scheduler_data->bl.idx;
+		_scheduler_data->bl.idx=(*(_scheduler_data->bl.dt+o)==UNKNOWN_BARRIER_OFFSET?UNKNOWN_BARRIER_OFFSET:(*(_scheduler_data->bl.dt+o))&0x7fffffff);
+	}
+	*(_scheduler_data->bl.dt+o)=0;
+	return o;
+}
+
+
+
 mutex_t create_mutex(void){
 	mutex_t o;
 	if (_scheduler_data->ml.idx==UNKNOWN_MUTEX_OFFSET){
@@ -248,7 +290,7 @@ mutex_t create_mutex(void){
 	}
 	else{
 		o=_scheduler_data->ml.idx;
-		_scheduler_data->ml.idx=UNUSED_MUTEX_GET_NEXT(*(_scheduler_data->ml.dt+o));
+		_scheduler_data->ml.idx=(*(_scheduler_data->ml.dt+o)==UNKNOWN_MUTEX_OFFSET?UNKNOWN_MUTEX_OFFSET:(*(_scheduler_data->ml.dt+o))&0x7fffffff);
 	}
 	*(_scheduler_data->ml.dt+o)=EMPTY_MUTEX;
 	return o;
@@ -263,7 +305,7 @@ semaphore_t create_semaphore(semaphore_counter_t n){
 		_scheduler_data->sl.len++;
 		if (_scheduler_data->sl.len>=_scheduler_data->sl.max){
 			_scheduler_data->sl.max+=WAIT_LIST_ALLOCATION_COUNT;
-			_scheduler_data->sl.dt=realloc(_scheduler_data->sl.dt,_scheduler_data->sl.max*sizeof(semaphore_count_t));
+			_scheduler_data->sl.dt=realloc(_scheduler_data->sl.dt,_scheduler_data->sl.max*sizeof(semaphore_counter_t));
 		}
 	}
 	else{
@@ -280,6 +322,16 @@ task_index_t create_task(task_function_t fn){
 	task_index_t o=_create_task(fn);
 	_queue_task(o);
 	return o;
+}
+
+
+
+void delete_barrier(barrier_t b){
+	if (b>=_scheduler_data->bl.len||!BARRIER_USED(*(_scheduler_data->bl.dt+b))){
+		return;
+	}
+	*(_scheduler_data->bl.dt+b)=_scheduler_data->bl.idx|BARRIER_FLAG_PTR_UNUSED;
+	_scheduler_data->bl.idx=b;
 }
 
 
@@ -303,6 +355,37 @@ void delete_semaphore(semaphore_t s){
 	}
 	*(_scheduler_data->sl.dt+s)=_scheduler_data->sl.idx|SEMAPHORE_FLAG_PTR_UNUSED;
 	_scheduler_data->sl.idx=s;
+}
+
+
+
+void increase_barrier(barrier_t b){
+	if (b>=_scheduler_data->bl.len||!BARRIER_USED(*(_scheduler_data->bl.dt+b))){
+		return;
+	}
+	(*(_scheduler_data->bl.dt+b))++;
+	barrier_counter_t v=*(_scheduler_data->bl.dt+b);
+	task_count_t i=0;
+	for (task_count_t j=0;j<_scheduler_data->wl.len;j++){
+		task_index_t k=*(_scheduler_data->wl.dt+j);
+		handle_t h=(_scheduler_data->tl.dt+k)->w;
+		if (HANDLE_GET_DATA(h)==b&&((HANDLE_GET_TYPE(h)==HANDLE_TYPE_BARRIER_EQ&&HANDLE_GET_DATA2(h)==v)||(HANDLE_GET_TYPE(h)==HANDLE_TYPE_BARRIER_GEQ&&HANDLE_GET_DATA2(h)<=v))){
+			(_scheduler_data->tl.dt+k)->w=UNKNOWN_HANDLE;
+			_queue_task(k);
+		}
+		else{
+			if (i!=j){
+				*(_scheduler_data->wl.dt+i)=*(_scheduler_data->wl.dt+j);
+			}
+			i++;
+		}
+	}
+	_scheduler_data->wl.len=i;
+	task_count_t sz=WAIT_LIST_ALLOCATION_SIZE(_scheduler_data->wl.len);
+	if (sz&&sz<_scheduler_data->wl.max){
+		_scheduler_data->wl.max=sz;
+		_scheduler_data->wl.dt=realloc(_scheduler_data->wl.dt,_scheduler_data->wl.max*sizeof(task_index_t));
+	}
 }
 
 
@@ -386,6 +469,19 @@ void release_semaphore(semaphore_t s){
 
 
 
+void reset_barrier(barrier_t b){
+	if (b>=_scheduler_data->bl.len||!BARRIER_USED(*(_scheduler_data->bl.dt+b))){
+		return;
+	}
+	*(_scheduler_data->bl.dt+b)=0;
+	task_index_t t=_remove_wait_tasks(CREATE_HANDLE2(HANDLE_TYPE_BARRIER_EQ,b,0));
+	if (t!=UNKNOWN_TASK_INDEX){
+		_queue_task(t);
+	}
+}
+
+
+
 void run_scheduler(task_function_t fn){
 	scheduler_t dt={
 		{
@@ -416,6 +512,12 @@ void run_scheduler(task_function_t fn){
 			0,
 			0,
 			UNKNOWN_SEMAPHORE_OFFSET
+		},
+		{
+			NULL,
+			0,
+			0,
+			UNKNOWN_BARRIER_OFFSET
 		}
 	};
 	_scheduler_data=&dt;// lgtm [cpp/stack-address-escape]
@@ -451,6 +553,40 @@ void run_scheduler(task_function_t fn){
 					}
 					else{
 						(dt.tl.dt+task)->w=CREATE_HANDLE(HANDLE_TYPE_MUTEX,mtx);
+						_add_wait(task);
+						task=_remove_queue_task();
+						if (task==UNKNOWN_TASK_INDEX){
+							goto _error;
+						}
+					}
+				}
+				else{
+					continue;
+				}
+			}
+			else if (TASK_RETURN_GET_TYPE(rt)==TASK_BEQ){
+				barrier_t bar=(barrier_t)TASK_RETURN_GET_DATA(rt);
+				barrier_counter_t bv=(barrier_counter_t)TASK_RETURN_GET_DATA2(rt);
+				if (bar<dt.bl.len&&BARRIER_USED(*(dt.bl.dt+bar))){
+					if (*(dt.bl.dt+bar)!=bv){
+						(dt.tl.dt+task)->w=CREATE_HANDLE2(HANDLE_TYPE_BARRIER_EQ,bar,bv);
+						_add_wait(task);
+						task=_remove_queue_task();
+						if (task==UNKNOWN_TASK_INDEX){
+							goto _error;
+						}
+					}
+				}
+				else{
+					continue;
+				}
+			}
+			else if (TASK_RETURN_GET_TYPE(rt)==TASK_BGE){
+				barrier_t bar=(barrier_t)TASK_RETURN_GET_DATA(rt);
+				barrier_counter_t bv=(barrier_counter_t)TASK_RETURN_GET_DATA2(rt);
+				if (bar<dt.bl.len&&BARRIER_USED(*(dt.bl.dt+bar))){
+					if (*(dt.bl.dt+bar)<bv){
+						(dt.tl.dt+task)->w=CREATE_HANDLE2(HANDLE_TYPE_BARRIER_GEQ,bar,bv);
 						_add_wait(task);
 						task=_remove_queue_task();
 						if (task==UNKNOWN_TASK_INDEX){
@@ -515,6 +651,7 @@ _cleanup:
 	free(dt.q.dt);
 	free(dt.wl.dt);
 	free(dt.ml.dt);
+	free(dt.bl.dt);
 	_scheduler_data=NULL;
 	return;
 }
