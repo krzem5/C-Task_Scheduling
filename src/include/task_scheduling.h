@@ -1,6 +1,7 @@
 #ifndef __TASK_SCHEDULING_H__
 #define __TASK_SCHEDULING_H__ 1
 #include <stdint.h>
+#include <stdbool.h>
 
 
 
@@ -15,6 +16,12 @@
 
 #define TASK_DATA(t,v) ((t)|((v)<<3))
 #define TASK_DATA2(t,v,n) ((t)|(((task_return_t)(v))<<3)|(((task_return_t)(n))<<35))
+
+#define PRIORITY_LOWEST 0
+#define PRIORITY_LOWER 1
+#define PRIORITY_DEFAULT 2
+#define PRIORITY_HIGHER 3
+#define PRIORITY_HIGHEST 4
 
 
 
@@ -99,6 +106,14 @@ void reset_barrier(barrier_t b);
 
 
 void run_scheduler(task_function_t fn);
+
+
+
+void set_daemon(task_index_t id,bool d);
+
+
+
+void set_priority(task_index_t id,uint8_t p);
 
 
 

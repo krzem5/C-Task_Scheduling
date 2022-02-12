@@ -10,6 +10,17 @@ static barrier_t bar;
 
 
 
+static task_return_t daemon_task(void){
+	static unsigned int tick=0;
+	if (!(tick%10)){
+		printf("[daemon-task]: tick %u\n",tick);
+	}
+	tick++;
+	return TASK_OK;
+}
+
+
+
 static task_return_t print_task(void){
 	static unsigned int tick=0;
 	printf("[print-task-1]: tick %u\n",tick);
@@ -177,10 +188,15 @@ static task_return_t main_task(void){
 	tick++;
 	switch (tick){
 		case 1:
-			child[0]=create_task(print_task);
-			child[1]=create_task(print_task2);
-			printf("Child#1: %u, Child#2: %u\n",child[0],child[1]);
-			return TASK_DATA(TASK_WAIT,child[0]);
+			{
+				task_index_t d_t=create_task(daemon_task);
+				set_daemon(d_t,1);
+				set_priority(d_t,PRIORITY_HIGHER);
+				child[0]=create_task(print_task);
+				child[1]=create_task(print_task2);
+				printf("Child#1: %u, Child#2: %u\n",child[0],child[1]);
+				return TASK_DATA(TASK_WAIT,child[0]);
+			}
 		case 2:
 			remove_task(child[0]);
 			printf("Child#1 finished\n");

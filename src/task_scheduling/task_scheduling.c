@@ -1,16 +1,21 @@
 #include <task_scheduling.h>
+#include <stdbool.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 
 
 #define TASK_UNUSED ((task_function_t)(void*)0)
 #define TASK_TERMINATED ((task_function_t)(void*)1)
 
-#define TASK_INSTRUCTION_COUNT 5
-
 #define TASK_ALLOCATION_COUNT 256
+
+#define PRIORITY_LOWEST_INSTRUCTION_COUNT 1
+#define PRIORITY_LOWER_INSTRUCTION_COUNT 4
+#define PRIORITY_DEFAULT_INSTRUCTION_COUNT 6
+#define PRIORITY_HIGHER_INSTRUCTION_COUNT 8
+#define PRIORITY_HIGHEST_INSTRUCTION_COUNT 11
 
 #define QUEUE_ALLOCATION_COUNT 256
 
@@ -56,6 +61,10 @@
 
 
 
+typedef uint8_t instruction_count_t;
+
+
+
 typedef uint32_t barrier_count_t;
 
 
@@ -83,6 +92,9 @@ typedef uint64_t handle_t;
 typedef struct __TASK{
 	task_function_t fn;
 	handle_t w;
+	instruction_count_t ic;
+	bool daemon;
+	bool _d;
 } task_t;
 
 
@@ -142,6 +154,7 @@ typedef struct __BARRIER_LIST{
 
 typedef struct __SCHEDULER{
 	task_list_t tl;
+	task_count_t q_nd_len;
 	queue_t q;
 	wait_list_t wl;
 	mutex_list_t ml;
@@ -172,6 +185,9 @@ static task_index_t _create_task(task_function_t fn){
 	}
 	(_scheduler_data->tl.dt+o)->fn=fn;
 	(_scheduler_data->tl.dt+o)->w=UNKNOWN_HANDLE;
+	(_scheduler_data->tl.dt+o)->ic=PRIORITY_DEFAULT_INSTRUCTION_COUNT;
+	(_scheduler_data->tl.dt+o)->daemon=0;
+	(_scheduler_data->tl.dt+o)->_d=0;
 	return o;
 }
 
@@ -184,6 +200,9 @@ static void _queue_task(task_index_t t){
 		_scheduler_data->q.dt=realloc(_scheduler_data->q.dt,_scheduler_data->q.max*sizeof(task_index_t));
 	}
 	*(_scheduler_data->q.dt+_scheduler_data->q.len-1)=t;
+	if (!(_scheduler_data->tl.dt+t)->daemon){
+		_scheduler_data->q_nd_len++;
+	}
 }
 
 
@@ -195,6 +214,9 @@ static task_index_t _remove_queue_task(void){
 	task_index_t o=*(_scheduler_data->q.dt+_scheduler_data->q.idx);
 	for (task_count_t j=_scheduler_data->q.idx+1;j<_scheduler_data->q.len;j++){
 		*(_scheduler_data->q.dt+j-1)=*(_scheduler_data->q.dt+j);
+	}
+	if (!(_scheduler_data->tl.dt+o)->daemon){
+		_scheduler_data->q_nd_len--;
 	}
 	_scheduler_data->q.len--;
 	if (!_scheduler_data->q.len){
@@ -253,6 +275,27 @@ static task_index_t _remove_wait_tasks(handle_t id){
 		_scheduler_data->wl.max=sz;
 		_scheduler_data->wl.dt=realloc(_scheduler_data->wl.dt,_scheduler_data->wl.max*sizeof(task_index_t));
 	}
+	return o;
+}
+
+
+
+static task_index_t _next_task(task_index_t t){
+	if (!_scheduler_data->q.len){
+		return t;
+	}
+	if (!(_scheduler_data->tl.dt+t)->daemon){
+		_scheduler_data->q_nd_len++;
+	}
+	task_index_t o=*(_scheduler_data->q.dt+_scheduler_data->q.idx);
+	if (!(_scheduler_data->tl.dt+o)->daemon){
+		_scheduler_data->q_nd_len--;
+	}
+	*(_scheduler_data->q.dt+_scheduler_data->q.idx)=t;
+	if (!_scheduler_data->q.idx){
+		_scheduler_data->q.idx=_scheduler_data->q.len;
+	}
+	_scheduler_data->q.idx--;
 	return o;
 }
 
@@ -490,6 +533,7 @@ void run_scheduler(task_function_t fn){
 			0,
 			0
 		},
+		0,
 		{
 			malloc(QUEUE_ALLOCATION_COUNT*sizeof(task_index_t)),
 			QUEUE_ALLOCATION_COUNT,
@@ -523,14 +567,15 @@ void run_scheduler(task_function_t fn){
 	_scheduler_data=&dt;// lgtm [cpp/stack-address-escape]
 	task_index_t task=_create_task(fn);
 	while (1){
-		uint32_t i=0;
-		while (i<TASK_INSTRUCTION_COUNT){
-			i++;
+		instruction_count_t i=(dt.tl.dt+task)->ic;
+		(dt.tl.dt+task)->daemon=(dt.tl.dt+task)->_d;
+		while (i){
+			i--;
 			task_return_t rt=(dt.tl.dt+task)->fn();
-			if (TASK_RETURN_GET_TYPE(rt)==TASK_OK){
-				continue;
+			if (TASK_RETURN_GET_TYPE(rt)==TASK_YIELD){
+				break;
 			}
-			if (TASK_RETURN_GET_TYPE(rt)==TASK_WAIT){
+			else if (TASK_RETURN_GET_TYPE(rt)==TASK_WAIT){
 				task_index_t w_id=(task_index_t)TASK_RETURN_GET_DATA(rt);
 				if (w_id!=task&&w_id<dt.tl.len&&(dt.tl.dt+w_id)->fn!=TASK_UNUSED&&(dt.tl.dt+w_id)->fn!=TASK_TERMINATED){
 					(dt.tl.dt+task)->w=CREATE_HANDLE(HANDLE_TYPE_TASK,w_id);
@@ -539,9 +584,7 @@ void run_scheduler(task_function_t fn){
 					if (task==UNKNOWN_TASK_INDEX){
 						goto _error;
 					}
-				}
-				else{
-					continue;
+					goto _skip_next;
 				}
 			}
 			else if (TASK_RETURN_GET_TYPE(rt)==TASK_MTX){
@@ -549,7 +592,6 @@ void run_scheduler(task_function_t fn){
 				if (mtx<dt.ml.len&&MUTEX_USED(*(dt.ml.dt+mtx))){
 					if (*(dt.ml.dt+mtx)==EMPTY_MUTEX){
 						*(dt.ml.dt+mtx)=task;
-						continue;
 					}
 					else{
 						(dt.tl.dt+task)->w=CREATE_HANDLE(HANDLE_TYPE_MUTEX,mtx);
@@ -558,10 +600,8 @@ void run_scheduler(task_function_t fn){
 						if (task==UNKNOWN_TASK_INDEX){
 							goto _error;
 						}
+						goto _skip_next;
 					}
-				}
-				else{
-					continue;
 				}
 			}
 			else if (TASK_RETURN_GET_TYPE(rt)==TASK_BEQ){
@@ -575,10 +615,8 @@ void run_scheduler(task_function_t fn){
 						if (task==UNKNOWN_TASK_INDEX){
 							goto _error;
 						}
+						goto _skip_next;
 					}
-				}
-				else{
-					continue;
 				}
 			}
 			else if (TASK_RETURN_GET_TYPE(rt)==TASK_BGE){
@@ -592,10 +630,8 @@ void run_scheduler(task_function_t fn){
 						if (task==UNKNOWN_TASK_INDEX){
 							goto _error;
 						}
+						goto _skip_next;
 					}
-				}
-				else{
-					continue;
 				}
 			}
 			else if (TASK_RETURN_GET_TYPE(rt)==TASK_SEM){
@@ -603,7 +639,6 @@ void run_scheduler(task_function_t fn){
 				if (sem<dt.sl.len&&SEMAPHORE_USED(*(dt.sl.dt+sem))){
 					if (*(dt.sl.dt+sem)){
 						(*(dt.sl.dt+sem))--;
-						continue;
 					}
 					else{
 						(dt.tl.dt+task)->w=CREATE_HANDLE(HANDLE_TYPE_SEMAPHORE,sem);
@@ -612,17 +647,15 @@ void run_scheduler(task_function_t fn){
 						if (task==UNKNOWN_TASK_INDEX){
 							goto _error;
 						}
+						goto _skip_next;
 					}
 				}
-				else{
-					continue;
-				}
 			}
-			else if (TASK_RETURN_GET_TYPE(rt)!=TASK_YIELD){
-				if (!dt.q.len&&!dt.wl.len){
+			else if (TASK_RETURN_GET_TYPE(rt)!=TASK_OK){
+				(dt.tl.dt+task)->fn=TASK_TERMINATED;
+				if (!dt.q_nd_len&&!dt.wl.len){
 					goto _cleanup;
 				}
-				(dt.tl.dt+task)->fn=TASK_TERMINATED;
 				task=_remove_wait_tasks(CREATE_HANDLE(HANDLE_TYPE_TASK,task));
 				if (task==UNKNOWN_TASK_INDEX){
 					task=_remove_queue_task();
@@ -630,19 +663,11 @@ void run_scheduler(task_function_t fn){
 						goto _error;
 					}
 				}
+				goto _skip_next;
 			}
-			i=(TASK_RETURN_GET_TYPE(rt)==TASK_YIELD?TASK_INSTRUCTION_COUNT:0);
-			break;
 		}
-		if (i==TASK_INSTRUCTION_COUNT&&dt.q.len){
-			task_index_t tmp=*(dt.q.dt+dt.q.idx);
-			*(dt.q.dt+dt.q.idx)=task;
-			task=tmp;
-			if (!dt.q.idx){
-				dt.q.idx=dt.q.len;
-			}
-			dt.q.idx--;
-		}
+		task=_next_task(task);
+_skip_next:;
 	}
 _error:
 	printf("Execution ended due to a deadlock.\n");
@@ -654,4 +679,36 @@ _cleanup:
 	free(dt.bl.dt);
 	_scheduler_data=NULL;
 	return;
+}
+
+
+
+void set_daemon(task_index_t id,bool d){
+	if (!id||id>=_scheduler_data->tl.len||(_scheduler_data->tl.dt+id)->fn==TASK_TERMINATED||(_scheduler_data->tl.dt+id)->fn==TASK_UNUSED){
+		return;
+	}
+	(_scheduler_data->tl.dt+id)->_d=d;
+}
+
+
+
+void set_priority(task_index_t id,uint8_t p){
+	if (id>=_scheduler_data->tl.len||(_scheduler_data->tl.dt+id)->fn==TASK_TERMINATED||(_scheduler_data->tl.dt+id)->fn==TASK_UNUSED){
+		return;
+	}
+	if (p==PRIORITY_LOWEST){
+		(_scheduler_data->tl.dt+id)->ic=PRIORITY_LOWEST_INSTRUCTION_COUNT;
+	}
+	else if (p==PRIORITY_LOWER){
+		(_scheduler_data->tl.dt+id)->ic=PRIORITY_LOWER_INSTRUCTION_COUNT;
+	}
+	else if (p==PRIORITY_DEFAULT){
+		(_scheduler_data->tl.dt+id)->ic=PRIORITY_DEFAULT_INSTRUCTION_COUNT;
+	}
+	else if (p==PRIORITY_HIGHER){
+		(_scheduler_data->tl.dt+id)->ic=PRIORITY_HIGHER_INSTRUCTION_COUNT;
+	}
+	else{
+		(_scheduler_data->tl.dt+id)->ic=PRIORITY_HIGHEST_INSTRUCTION_COUNT;
+	}
 }
